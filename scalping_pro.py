@@ -1,4 +1,4 @@
-import ccxt, asyncio, pandas as pd, os, threading, traceback, time
+import ccxt, asyncio, pandas as pd, os, threading, traceback, time, requests
 from flask import Flask
 from telegram.ext import ApplicationBuilder, CommandHandler, ConversationHandler, MessageHandler, filters
 
@@ -16,42 +16,47 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True") == "True"
 
-print(f"START V6 FIX: {SYMBOL} Paper={PAPER_TRADE}", flush=True)
+print(f"START V7 DIRECT API: {SYMBOL}", flush=True)
 
-# Public exchange for market data - NO API KEY
-public_exchange = ccxt.delta({'enableRateLimit': True})
-# Private exchange for trading
 private_exchange = ccxt.delta({'apiKey': DELTA_API_KEY, 'secret': DELTA_API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'future'}})
-
-try:
-    private_exchange.load_markets()
-    print("Markets loaded", flush=True)
-except Exception as e:
-    print(f"Market warning {e}", flush=True)
 
 position=None; entry_price=0
 
 web_app=Flask(__name__)
 @web_app.route('/')
-def home(): return f"<h1>V6 RUNNING {SYMBOL} POS:{position} FIX:{FIXED_DOLLARS}</h1>"
+def home(): return f"<h1>V7 RUNNING {SYMBOL} POS:{position}</h1>"
 def run_web(): web_app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
 threading.Thread(target=run_web, daemon=True).start()
 
 def get_indicators():
     try:
+        # Direct Delta public API - no CCXT
         ohlcv = None
-        for sym in ["BTC/USD:USD", "BTC/USD"]:
+        try:
+            # Try Delta India API
+            url = "https://api.india.delta.exchange/v2/candles"
+            params = {"resolution": "5m", "symbol": "BTCUSD", "candles": 250}
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                candles = data.get('result', [])
+                if len(candles) >= 60:
+                    # Delta returns [time, open, high, low, close, volume]
+                    ohlcv = [[c[0]/1000 if c[0]>1e12 else c[0], c[1], c[2], c[3], c[4], c[5]] for c in candles]
+                    print(f"Got {len(ohlcv)} candles from Delta API", flush=True)
+        except Exception as e:
+            print(f"Direct API fail {e}", flush=True)
+        
+        # Fallback to CCXT public
+        if not ohlcv:
             try:
-                ohlcv = public_exchange.fetch_ohlcv(sym, TIMEFRAME, limit=250)
-                if ohlcv and len(ohlcv) >= 60:
-                    print(f"Got data from {sym}", flush=True)
-                    break
+                pub = ccxt.delta({'enableRateLimit': True})
+                ohlcv = pub.fetch_ohlcv("BTC/USD:USD", "5m", limit=250)
             except Exception as e:
-                print(f"Fetch {sym} fail {e}", flush=True)
-                continue
+                print(f"CCXT fail {e}", flush=True)
         
         if not ohlcv or len(ohlcv) < 60:
-            print("No ohlcv", flush=True)
+            print("No ohlcv data", flush=True)
             return None, None
             
         df=pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
@@ -65,7 +70,8 @@ def get_indicators():
         df['rsi']=100-(100/(1+g/l))
         last=df.iloc[-1]; price=float(df['c'].iloc[-1])
         if pd.isna(last['rsi']):
-            return None, price
+            price=float(df['c'].iloc[-1])
+            return df.iloc[-2], price
         print(f"Price {price:.1f} RSI {float(last['rsi']):.1f}", flush=True)
         return last, price
     except Exception as e:
@@ -78,13 +84,6 @@ def place_order(side,qty,ep):
     if PAPER_TRADE: print(f"[PAPER] {side} {qty} @ {ep}",flush=True); return {}
     try:
         private_exchange.create_market_order(SYMBOL,side,qty)
-        tp=ep*1.004 if side=='buy' else ep*0.996
-        sl=ep*0.992 if side=='buy' else ep*1.008
-        ts='sell' if side=='buy' else 'buy'
-        try: private_exchange.create_order(SYMBOL,'limit',ts,qty,tp,{'reduce_only':True})
-        except: pass
-        try: private_exchange.create_order(SYMBOL,'market',ts,qty,None,{'stop_price':sl,'reduce_only':True})
-        except: pass
         return {}
     except Exception as e: print(e); return None
 
@@ -100,10 +99,10 @@ def format_market_msg(ind, price):
         elif price > up: bb_sig = "Above Upper - SHORT Signal"
         else: bb_sig = "Inside Bands - No Signal"
         trend = "Bullish" if price > ema else "Bearish"
-        msg = f"""MARKET ANALYSIS (5m)
+        return f"""MARKET ANALYSIS (5m)
 Price: ${price:.2f}
 RSI(14): {rsi:.2f} - {rsi_sig}
-Bollinger Bands:
+Bollinger:
   Upper: ${up:.2f}
   SMA20: ${sma:.2f}
   Lower: ${lo:.2f}
@@ -115,21 +114,19 @@ Fixed: ${FIXED_DOLLARS}
 Position: {position}
 TP 0.4% | SL 0.8%
 """
-        return msg
     except Exception as e:
-        return f"Market: ${price:.2f} RSI:{float(ind['rsi']):.1f}"
+        return f"Market: ${price:.2f} RSI:{float(ind['rsi']):.1f} Error:{e}"
 
 async def start_cmd(u,c):
     ind, price = get_indicators()
     if ind is not None:
         await u.message.reply_text(format_market_msg(ind, price))
     else:
-        await asyncio.sleep(3)
+        await u.message.reply_text(f"V7 Bot {SYMBOL}\nRetrying market data...\nFixed: ${FIXED_DOLLARS}")
+        await asyncio.sleep(4)
         ind, price = get_indicators()
         if ind is not None:
             await u.message.reply_text(format_market_msg(ind, price))
-        else:
-            await u.message.reply_text(f"V6 Bot {SYMBOL}\nMarket data retrying... Please try /info in 10 sec\nFixed: ${FIXED_DOLLARS}")
     await u.message.reply_text(f"Enter fixed amount in USD (Current: ${FIXED_DOLLARS})")
     return ASKING_AMOUNT
 
@@ -143,17 +140,17 @@ async def recv_amt(u,c):
         if ind is not None:
             await u.message.reply_text(f"Fixed Amount Set: ${FIXED_DOLLARS} x {LEVERAGE}x\nBot Auto Started - Waiting for signal...\n\n{format_market_msg(ind, price)}")
         else:
-            await u.message.reply_text(f"Fixed Amount Set: ${FIXED_DOLLARS} x {LEVERAGE}x\nBot Auto Started - Market data will be available shortly. Use /info")
+            await u.message.reply_text(f"Fixed Amount Set: ${FIXED_DOLLARS} x {LEVERAGE}x\nBot Auto Started")
         return ConversationHandler.END
-    except: await u.message.reply_text("Please send a number only. Example: 2"); return ASKING_AMOUNT
+    except: await u.message.reply_text("Send number only. Ex: 2"); return ASKING_AMOUNT
 
 async def cancel_cmd(u,c): await u.message.reply_text("Cancelled"); return ConversationHandler.END
 async def info_cmd(u,c):
     ind, price = get_indicators()
     if ind is not None: await u.message.reply_text(format_market_msg(ind, price))
-    else: await u.message.reply_text("Market data loading... Please try again in 10 seconds")
+    else: await u.message.reply_text("Market data loading... Try again in 15 seconds")
 
-async def pnl_cmd(u,c): await u.message.reply_text(f"Position: {position}\nEntry: {entry_price}\nFixed: ${FIXED_DOLLARS}\nLeverage: {LEVERAGE}x")
+async def pnl_cmd(u,c): await u.message.reply_text(f"Position: {position}\nEntry: {entry_price}\nFixed: ${FIXED_DOLLARS}")
 async def close_cmd(u,c):
     global position
     if position:
@@ -171,7 +168,7 @@ async def balance_cmd(u,c):
 
 async def trading_loop(app):
     global position, entry_price
-    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"V6 BOT STARTED {SYMBOL} Fixed:${FIXED_DOLLARS}\nUse /start to see market details")
+    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"V7 BOT STARTED {SYMBOL} Fixed:${FIXED_DOLLARS}")
     except: pass
     while True:
         try:
@@ -183,16 +180,16 @@ async def trading_loop(app):
                 short_c=price>float(ind['up'])*0.999 and float(ind['rsi'])>65 and price<float(ind['ema'])
                 if long_c:
                     place_order('buy',q,price); position="LONG"; entry_price=price
-                    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"LONG ENTRY ${price:.2f}\nRSI {float(ind['rsi']):.1f}\n{format_market_msg(ind, price)}")
+                    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"LONG ENTRY ${price:.2f}\n{format_market_msg(ind, price)}")
                     except: pass
                 elif short_c:
                     place_order('sell',q,price); position="SHORT"; entry_price=price
-                    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"SHORT ENTRY ${price:.2f}\nRSI {float(ind['rsi']):.1f}\n{format_market_msg(ind, price)}")
+                    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"SHORT ENTRY ${price:.2f}\n{format_market_msg(ind, price)}")
                     except: pass
             else:
                 pnl=(price-entry_price)/entry_price if position=="LONG" else (entry_price-price)/entry_price
                 if pnl<=-SL_PCT or pnl>=TP_PCT:
-                    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"{'TP HIT' if pnl>0 else 'SL HIT'} {position} {pnl*100:.2f}%\nPrice ${price:.2f}")
+                    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"{'TP HIT' if pnl>0 else 'SL HIT'} {position} {pnl*100:.2f}%")
                     except: pass
                     position=None
             await asyncio.sleep(30)
@@ -203,16 +200,16 @@ def run():
     conv=ConversationHandler(entry_points=[CommandHandler("start",start_cmd)],states={ASKING_AMOUNT:[MessageHandler(filters.TEXT & ~filters.COMMAND,recv_amt)]},fallbacks=[CommandHandler("cancel",cancel_cmd)])
     app.add_handler(conv); app.add_handler(CommandHandler("info",info_cmd)); app.add_handler(CommandHandler("pnl",pnl_cmd)); app.add_handler(CommandHandler("close",close_cmd)); app.add_handler(CommandHandler("balance",balance_cmd))
     async def on_startup(a):
-        await asyncio.sleep(5)
-        try: await a.bot.delete_webhook(drop_pending_updates=True); print("Webhook deleted",flush=True)
+        await asyncio.sleep(3)
+        try: await a.bot.delete_webhook(drop_pending_updates=True)
         except: pass
         asyncio.create_task(trading_loop(a))
     app.post_init=on_startup
-    print("Bot polling V6...",flush=True)
+    print("Bot polling V7...",flush=True)
     while True:
         try: app.run_polling(drop_pending_updates=True, close_loop=False, stop_signals=None)
         except Exception as e:
-            if "Conflict" in str(e): print("Conflict wait 30s",flush=True); time.sleep(30); continue
+            if "Conflict" in str(e): time.sleep(30); continue
             print(e); time.sleep(10); continue
         break
 if __name__=="__main__": run()
