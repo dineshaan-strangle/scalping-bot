@@ -9,16 +9,14 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
-# ========== RENDER ENV ==========
 DELTA_API_KEY = os.getenv("DELTA_API_KEY")
 DELTA_API_SECRET = os.getenv("DELTA_API_SECRET")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SYMBOL = os.getenv("SYMBOL", "BTC/USD:USD")  # FIX: Correct symbol for Delta CCXT
+SYMBOL = os.getenv("SYMBOL", "BTC/USD:USD")
 TIMEFRAME = os.getenv("TIMEFRAME", "5m")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True") == "True"
 
-# ========== FIXED OPTIONS ==========
 LEVERAGE = 25
 FIXED_DOLLARS = None
 ASKING_AMOUNT = 1
@@ -26,7 +24,7 @@ TP_PCT = 0.004
 SL_PCT = 0.008
 BE_TRIGGER = 0.0025
 
-print(f"STARTING V3: {SYMBOL} Paper={PAPER_TRADE} Leverage={LEVERAGE}x")
+print(f"STARTING V3 FINAL: {SYMBOL} Paper={PAPER_TRADE} Leverage={LEVERAGE}x", flush=True)
 
 exchange = ccxt.delta({
     'apiKey': DELTA_API_KEY,
@@ -34,33 +32,29 @@ exchange = ccxt.delta({
     'enableRateLimit': True,
 })
 
-# ===== CRITICAL FIX: Load markets at startup =====
 try:
-    print("⏳ Loading Delta markets...")
+    print("⏳ Loading Delta markets...", flush=True)
     exchange.load_markets()
-    print(f"✅ Markets loaded: {len(exchange.markets)}")
-    
-    # Auto-fix symbol if wrong
+    print(f"✅ Markets loaded: {len(exchange.markets)}", flush=True)
     if SYMBOL not in exchange.markets:
-        print(f"⚠️ {SYMBOL} not found in markets")
-        for alt in ["BTC/USD:USD", "BTC/USD", "BTCUSD", "BTC-PERP"]:
+        print(f"⚠️ {SYMBOL} not found, checking alternatives", flush=True)
+        for alt in ["BTC/USD:USD", "BTC/USD", "BTC-PERP", "BTCUSD"]:
             if alt in exchange.markets:
-                print(f"✅ Auto-switching symbol to: {alt}")
+                print(f"✅ Using symbol: {alt}", flush=True)
                 SYMBOL = alt
                 break
-    print(f"Using SYMBOL: {SYMBOL}")
+    print(f"FINAL SYMBOL: {SYMBOL}", flush=True)
 except Exception as e:
-    print(f"Market load error at startup: {e}")
+    print(f"Market load error: {e}", flush=True)
 
 position = None
 entry_price = 0.0
 be_done = False
 
-# ========== FLASK FOR RENDER ==========
 web_app = Flask(__name__)
 @web_app.route('/')
 def home():
-    return f"<h1>🚀 V3 BOT RUNNING</h1><p>Mode: {'PAPER' if PAPER_TRADE else 'REAL'}</p><p>Symbol: {SYMBOL}</p><p>Leverage: {LEVERAGE}x</p><p>Fixed $: {FIXED_DOLLARS}</p><p>Position: {position}</p>"
+    return f"<h1>V3 RUNNING</h1><p>Symbol: {SYMBOL}</p><p>Mode: {'PAPER' if PAPER_TRADE else 'REAL'}</p><p>Fixed $: {FIXED_DOLLARS}</p><p>Position: {position}</p>"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -80,7 +74,7 @@ def set_leverage_25x():
             'product_id': product_id,
             'leverage': str(LEVERAGE)
         })
-        print(f"✅ Leverage {LEVERAGE}x set for {SYMBOL}")
+        print(f"✅ Leverage {LEVERAGE}x set")
     except Exception as e:
         print(f"Leverage note: {e}")
 
@@ -88,41 +82,32 @@ def get_indicators():
     try:
         if not exchange.markets:
             exchange.load_markets()
-            
         ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=250)
-        
         if not ohlcv or len(ohlcv) < 60:
-            print(f"⚠️ OHLCV too short: {len(ohlcv) if ohlcv else 0}")
+            print(f"⚠️ OHLCV short: {len(ohlcv) if ohlcv else 0}", flush=True)
             return None, None
-            
         df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
         if df.empty:
             return None, None
-
         df['sma20'] = df['c'].rolling(20, min_periods=20).mean()
         df['std20'] = df['c'].rolling(20, min_periods=20).std()
         df['upper'] = df['sma20'] + 2*df['std20']
         df['lower'] = df['sma20'] - 2*df['std20']
         df['ema200'] = df['c'].ewm(span=200, min_periods=200).mean()
-        
         delta = df['c'].diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
         loss = (-delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14).mean()
         loss = loss.replace(0, 1e-9)
         rs = gain / loss
         df['rsi'] = 100 - (100/(1+rs))
-        
         last = df.iloc[-1]
         price = float(df['c'].iloc[-1])
-        
         if pd.isna(last['rsi']) or pd.isna(last['lower']):
-            print(f"⏳ Warming up...")
+            print(f"⏳ Warming up...", flush=True)
             return None, None
-            
         return last, price
-        
     except Exception as e:
-        print(f"Indicator Error: {e}")
+        print(f"Indicator Error: {e}", flush=True)
         traceback.print_exc()
         return None, None
 
@@ -140,7 +125,7 @@ def place_order_with_tpsl(side, qty, entry_price_ref):
     if PAPER_TRADE:
         tp = entry_price_ref * (1 + TP_PCT) if side == 'buy' else entry_price_ref * (1 - TP_PCT)
         sl = entry_price_ref * (1 - SL_PCT) if side == 'buy' else entry_price_ref * (1 + SL_PCT)
-        print(f"[PAPER] {side.upper()} {qty} @ {entry_price_ref:.2f} | TP {tp:.2f} | SL {sl:.2f}")
+        print(f"[PAPER] {side.upper()} {qty} @ {entry_price_ref:.2f} | TP {tp:.2f} | SL {sl:.2f}", flush=True)
         return {"id": "paper"}
     try:
         set_leverage_25x()
@@ -170,7 +155,6 @@ def place_order_with_tpsl(side, qty, entry_price_ref):
         traceback.print_exc()
         return None
 
-# ========== TELEGRAM HANDLERS ==========
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🚀 V3 BOT FIXED\n\nLeverage: {LEVERAGE}x\nTP: {TP_PCT*100}% | SL: {SL_PCT*100}%\nSymbol: {SYMBOL}\nCurrent Fixed: {FIXED_DOLLARS}\n\n💰 Evalo dollar fix pannanum?\nNumber mattum anupunga (Ex: 5)")
     return ASKING_AMOUNT
@@ -222,27 +206,22 @@ async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Paper: {PAPER_TRADE}\nFixed $: {FIXED_DOLLARS}\nLeverage: {LEVERAGE}x\nSymbol: {SYMBOL}\nPos: {position}")
 
-# ========== TRADING LOOP ==========
 async def trading_loop(app):
     global position, entry_price, be_done
     try:
         await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🚀 V3 BOT STARTED - NO ERROR\nSymbol {SYMBOL}\nLeverage {LEVERAGE}x | TP/SL ON\nSend /start to set $")
     except Exception as e:
         print(f"TG Error: {e}")
-    
     while True:
         try:
             if FIXED_DOLLARS is None:
                 await asyncio.sleep(10)
                 continue
-            
             ind, price = get_indicators()
             if ind is None or price is None:
                 await asyncio.sleep(15)
                 continue
-            
             qty = get_qty_from_dollars(FIXED_DOLLARS, price)
-
             if position is None:
                 try:
                     long_cond = (price < float(ind['lower'])*1.001) and (float(ind['rsi']) < 35) and (price > float(ind['ema200']))
@@ -250,7 +229,6 @@ async def trading_loop(app):
                 except:
                     await asyncio.sleep(10)
                     continue
-
                 if long_cond:
                     place_order_with_tpsl('buy', qty, price)
                     position = "LONG"; entry_price = price; be_done=False
@@ -273,7 +251,6 @@ async def trading_loop(app):
                         await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"{result} {position} {pnl_pct*100:.2f}%")
                     except: pass
                     position=None
-
             await asyncio.sleep(30)
         except asyncio.CancelledError:
             break
@@ -293,13 +270,11 @@ def run():
     app.add_handler(CommandHandler("pnl", pnl_cmd))
     app.add_handler(CommandHandler("close", close_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
-
     async def on_startup(app_instance):
         await asyncio.sleep(2)
         asyncio.create_task(trading_loop(app_instance))
-
     app.post_init = on_startup
-    print("Bot polling started V3...")
+    print("Bot polling started V3...", flush=True)
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
