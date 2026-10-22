@@ -1,4 +1,4 @@
-# V1 SCALPING PRO - FINAL - AMOUNT ASK + 25X + REAL TP/SL
+# V1 SCALPING PRO - FINAL FIXED - AMOUNT ASK + 25X + TP/SL + RENDER FIX
 import ccxt
 import time
 import asyncio
@@ -19,8 +19,8 @@ TIMEFRAME = os.getenv("TIMEFRAME", "5m")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True") == "True"
 
 # ========== PUTHU OPTIONS ==========
-LEVERAGE = 25  # Option 2: 25x fix
-FIXED_DOLLARS = None  # Option 1: User kitta ketkura amount
+LEVERAGE = 25  # 25x fix
+FIXED_DOLLARS = None  # User kitta ketkura amount
 ASKING_AMOUNT = 1
 
 TP_PCT = 0.004  # 0.4% TP
@@ -39,19 +39,19 @@ position = None
 entry_price = 0.0
 be_done = False
 
-# ========== FLASK FOR RENDER PORT FIX ==========
+# ========== FLASK FOR RENDER ==========
 web_app = Flask(__name__)
 @web_app.route('/')
 def home():
-    return f"<h1>🚀 V1 BOT RUNNING</h1><p>Mode: {'PAPER' if PAPER_TRADE else 'REAL'}</p><p>Symbol: {SYMBOL}</p><p>Leverage: {LEVERAGE}x</p><p>Fixed $: {FIXED_DOLLARS}</p><p>TP: {TP_PCT*100}% SL: {SL_PCT*100}%</p><p>Position: {position}</p>"
+    return f"<h1>🚀 V1 BOT RUNNING</h1><p>Mode: {'PAPER' if PAPER_TRADE else 'REAL'}</p><p>Symbol: {SYMBOL}</p><p>Leverage: {LEVERAGE}x</p><p>Fixed $: {FIXED_DOLLARS}</p><p>Position: {position}</p>"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
+# ============================================
 
-# ========== FUNCTIONS ==========
 def set_leverage_25x():
     if PAPER_TRADE:
         print(f"[PAPER] Leverage {LEVERAGE}x set")
@@ -113,25 +113,17 @@ def place_order_with_tpsl(side, qty, entry_price_ref):
             tp_side = 'buy'
             sl_side = 'buy'
 
-        # TP Limit
         try:
             exchange.create_order(SYMBOL, 'limit', tp_side, qty, tp_price, {'reduce_only': True})
             print(f"✅ TP placed @ {tp_price}")
         except Exception as e:
             print(f"TP Error: {e}")
 
-        # SL Stop Market
         try:
-            exchange.create_order(SYMBOL, 'market', sl_side, qty, None, {'stop_price': sl_price, 'reduce_only': True, 'stop_order_type': 'stop_loss_order'})
-            # fallback simple stop
-            exchange.create_order(SYMBOL, 'limit', sl_side, qty, sl_price, {'stop_price': sl_price, 'reduce_only': True})
+            exchange.create_order(SYMBOL, 'market', sl_side, qty, None, {'stop_price': sl_price, 'reduce_only': True})
             print(f"✅ SL placed @ {sl_price}")
         except Exception as e:
-            print(f"SL Error (trying alt): {e}")
-            try:
-                exchange.create_order(SYMBOL, 'market', sl_side, qty, None, {'stop_price': sl_price})
-            except Exception as e2:
-                print(f"SL final error: {e2}")
+            print(f"SL Error: {e}")
 
         return order
     except Exception as e:
@@ -166,7 +158,7 @@ async def receive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Leverage: {LEVERAGE}x\n"
             f"Notional: {FIXED_DOLLARS * LEVERAGE}$\n"
             f"TP: {TP_PCT*100}% | SL: {SL_PCT*100}%\n\n"
-            f"Scalping start aagidum. /pnl check pannalam."
+            f"Scalping start aagidum."
         )
         return ConversationHandler.END
     except:
@@ -182,7 +174,7 @@ async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, price = get_indicators()
         if price:
             pnl = (price-entry_price)/entry_price if position=="LONG" else (entry_price-price)/entry_price
-            await update.message.reply_text(f"📊 {position} PNL: {pnl*100:.2f}%\nEntry: {entry_price}\nFixed: {FIXED_DOLLARS}$ {LEVERAGE}x")
+            await update.message.reply_text(f"📊 {position} PNL: {pnl*100:.2f}%\nFixed: {FIXED_DOLLARS}$ {LEVERAGE}x")
     else:
         await update.message.reply_text(f"No position\nFixed: {FIXED_DOLLARS}$ {LEVERAGE}x")
 
@@ -192,9 +184,7 @@ async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, price = get_indicators()
         qty = get_qty_from_dollars(FIXED_DOLLARS, price or 85000)
         side = 'sell' if position=="LONG" else 'buy'
-        if PAPER_TRADE:
-            print(f"[PAPER] close {side}")
-        else:
+        if not PAPER_TRADE:
             try:
                 exchange.create_market_order(SYMBOL, side, qty, None, {'reduce_only': True})
             except:
@@ -205,25 +195,25 @@ async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No position")
 
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Paper: {PAPER_TRADE}\nFixed $: {FIXED_DOLLARS}\nLeverage: {LEVERAGE}x\nTP/SL: {TP_PCT*100}% / {SL_PCT*100}%")
+    await update.message.reply_text(f"Paper: {PAPER_TRADE}\nFixed $: {FIXED_DOLLARS}\nLeverage: {LEVERAGE}x")
 
 # ========== TRADING LOOP ==========
 async def trading_loop(app):
     global position, entry_price, be_done
     try:
-        await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🚀 V1 BOT STARTED\nSend /start to set $ amount\nLeverage {LEVERAGE}x | TP/SL ON")
+        await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🚀 V1 BOT STARTED LIVE\nSend /start to set $ amount\nLeverage {LEVERAGE}x | TP/SL ON")
     except Exception as e:
         print(f"TG Error: {e}")
     
     while True:
         try:
             if FIXED_DOLLARS is None:
-                time.sleep(10)
+                await asyncio.sleep(10)
                 continue
             
             ind, price = get_indicators()
             if ind is None:
-                time.sleep(10)
+                await asyncio.sleep(10)
                 continue
             
             qty = get_qty_from_dollars(FIXED_DOLLARS, price)
@@ -243,35 +233,38 @@ async def trading_loop(app):
                 pnl_pct = (price-entry_price)/entry_price if position=="LONG" else (entry_price-price)/entry_price
                 if not be_done and pnl_pct >= BE_TRIGGER:
                     be_done=True
-                    await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🔒 BE HIT +{pnl_pct*100:.2f}%")
+                    await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🔒 BE +{pnl_pct*100:.2f}%")
                 if pnl_pct <= -SL_PCT or pnl_pct >= TP_PCT:
                     result = "✅ TP" if pnl_pct>0 else "❌ SL"
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"{result} {position} {pnl_pct*100:.2f}%")
                     position=None
 
-            time.sleep(30)
+            await asyncio.sleep(30)
         except Exception as e:
             print(f"Loop Error {e}")
-            time.sleep(10)
+            await asyncio.sleep(10)
 
 def run():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_cmd)],
         states={ASKING_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_amount)]},
         fallbacks=[CommandHandler("cancel", cancel_cmd)]
     )
+    
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("pnl", pnl_cmd))
     app.add_handler(CommandHandler("close", close_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
+
+    async def on_startup(app_instance):
+        asyncio.create_task(trading_loop(app_instance))
+
+    app.post_init = on_startup
     
-    loop = asyncio.new_event_loop()
-    def start_loop():
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(trading_loop(app))
-    threading.Thread(target=start_loop, daemon=True).start()
-    app.run_polling()
+    print("Bot polling started...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     run()
