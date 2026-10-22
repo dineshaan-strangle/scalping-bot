@@ -16,7 +16,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True") == "True"
 
-print(f"START V8 DIRECT API FIX", flush=True)
+print(f"START V8.2 FIXED - NO SERIES ERROR", flush=True)
 
 private_exchange = ccxt.delta({'apiKey': DELTA_API_KEY, 'secret': DELTA_API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'future'}})
 
@@ -24,16 +24,15 @@ position=None; entry_price=0
 
 web_app=Flask(__name__)
 @web_app.route('/')
-def home(): return f"<h1>V8 RUNNING POS:{position}</h1>"
+def home(): return f"<h1>V8.2 RUNNING POS:{position}</h1>"
 def run_web(): web_app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
 threading.Thread(target=run_web, daemon=True).start()
 
 def get_indicators():
     try:
-        # Correct Delta public API
         url = "https://cdn.india.deltaex.org/v2/history/candles"
         end_ts = int(time.time())
-        start_ts = end_ts - (3600 * 5)  # last 5 hours
+        start_ts = end_ts - (3600 * 5)
         params = {"resolution": "5m", "symbol": "BTCUSD", "start": str(start_ts), "end": str(end_ts)}
         
         ohlcv = None
@@ -44,9 +43,7 @@ def get_indicators():
                 data = r.json()
                 result = data.get('result', data) if isinstance(data, dict) else data
                 if result and len(result) >= 20:
-                    # result is list of dicts: time, open, high, low, close, volume
                     df_temp = pd.DataFrame(result)
-                    # Convert to ccxt format
                     ohlcv = []
                     for _, row in df_temp.iterrows():
                         t = int(row['time'])
@@ -55,7 +52,6 @@ def get_indicators():
                     print(f"Got {len(ohlcv)} candles via direct API", flush=True)
         except Exception as e:
             print(f"Direct API fail {e}", flush=True)
-            traceback.print_exc()
         
         if not ohlcv or len(ohlcv) < 20:
             print("Trying CCXT fallback", flush=True)
@@ -77,9 +73,20 @@ def get_indicators():
         d=df['c'].diff(); g=d.clip(lower=0).ewm(alpha=1/14).mean()
         l=(-d.clip(upper=0)).ewm(alpha=1/14).mean().replace(0,1e-9)
         df['rsi']=100-(100/(1+g/l))
-        last=df.iloc[-1]; price=float(df['c'].iloc[-1])
-        print(f"Price {price:.1f} RSI {float(last['rsi']):.1f}", flush=True)
-        return last, price
+
+        # ✅ FIXED - Convert to dict of floats, no Series
+        last_row = df.iloc[-1]
+        price = float(last_row['c'])
+        ind = {
+            'rsi': float(last_row['rsi']),
+            'sma': float(last_row['sma']),
+            'up': float(last_row['up']),
+            'lo': float(last_row['lo']),
+            'ema': float(last_row['ema']),
+            'price': price
+        }
+        print(f"Price {price:.1f} RSI {ind['rsi']:.1f}", flush=True)
+        return ind, price
     except Exception as e:
         print(f"Ind Err {e}", flush=True)
         traceback.print_exc()
@@ -94,7 +101,7 @@ def place_order(side,qty,ep):
     except Exception as e: print(e); return None
 
 def format_market_msg(ind, price):
-    rsi = float(ind['rsi']); ema = float(ind['ema']); up = float(ind['up']); lo = float(ind['lo']); sma = float(ind['sma'])
+    rsi = ind['rsi']; ema = ind['ema']; up = ind['up']; lo = ind['lo']; sma = ind['sma']
     if rsi < 30: rsi_sig = "Oversold - LONG Opportunity"
     elif rsi > 70: rsi_sig = "Overbought - SHORT Opportunity"
     elif rsi < 35: rsi_sig = "Near Oversold - LONG Ready"
@@ -166,7 +173,7 @@ async def balance_cmd(u,c):
 
 async def trading_loop(app):
     global position, entry_price
-    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"V8 BOT STARTED {SYMBOL} Fixed:${FIXED_DOLLARS}")
+    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"V8.2 BOT STARTED {SYMBOL} Fixed:${FIXED_DOLLARS}")
     except: pass
     while True:
         try:
@@ -174,8 +181,9 @@ async def trading_loop(app):
             if not ind: await asyncio.sleep(15); continue
             q=get_qty(FIXED_DOLLARS,price)
             if position is None:
-                long_c=price<float(ind['lo'])*1.001 and float(ind['rsi'])<35 and price>float(ind['ema'])
-                short_c=price>float(ind['up'])*0.999 and float(ind['rsi'])>65 and price<float(ind['ema'])
+                # ✅ FIXED - ind is dict now
+                long_c = (price < ind['lo']*1.001) and (ind['rsi'] < 35) and (price > ind['ema'])
+                short_c = (price > ind['up']*0.999) and (ind['rsi'] > 65) and (price < ind['ema'])
                 if long_c:
                     place_order('buy',q,price); position="LONG"; entry_price=price
                     try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"LONG ENTRY ${price:.2f}\n{format_market_msg(ind, price)}")
@@ -191,7 +199,7 @@ async def trading_loop(app):
                     except: pass
                     position=None
             await asyncio.sleep(30)
-        except Exception as e: print(e); await asyncio.sleep(10)
+        except Exception as e: print(f"Loop Err {e}"); traceback.print_exc(); await asyncio.sleep(10)
 
 def run():
     app=ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -203,7 +211,7 @@ def run():
         except: pass
         asyncio.create_task(trading_loop(a))
     app.post_init=on_startup
-    print("Bot polling V8...",flush=True)
+    print("Bot polling V8.2...",flush=True)
     while True:
         try: app.run_polling(drop_pending_updates=True, close_loop=False, stop_signals=None)
         except Exception as e:
