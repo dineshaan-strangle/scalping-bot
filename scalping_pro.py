@@ -13,7 +13,7 @@ DELTA_API_KEY = os.getenv("DELTA_API_KEY")
 DELTA_API_SECRET = os.getenv("DELTA_API_SECRET")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SYMBOL = os.getenv("SYMBOL", "BTC/USD:USD")
+SYMBOL = "BTC/USD:USD"
 TIMEFRAME = os.getenv("TIMEFRAME", "5m")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True") == "True"
 
