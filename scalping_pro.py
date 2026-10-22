@@ -260,6 +260,7 @@ async def trading_loop(app):
             await asyncio.sleep(10)
 
 def run():
+    import time
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_cmd)],
@@ -270,12 +271,35 @@ def run():
     app.add_handler(CommandHandler("pnl", pnl_cmd))
     app.add_handler(CommandHandler("close", close_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
+
     async def on_startup(app_instance):
+        # 15 sec wait - pazhaya bot close aagattum
+        await asyncio.sleep(15)
+        try:
+            await app_instance.bot.delete_webhook(drop_pending_updates=True)
+            print("✅ Webhook deleted, starting clean", flush=True)
+        except Exception as e:
+            print(f"Webhook delete: {e}")
         await asyncio.sleep(2)
         asyncio.create_task(trading_loop(app_instance))
+
     app.post_init = on_startup
-    print("Bot polling started V3...", flush=True)
-    app.run_polling(drop_pending_updates=True)
+    print("Bot polling started V3 - Conflict fix...", flush=True)
+    
+    # Conflict vantha retry pannum loop
+    while True:
+        try:
+            app.run_polling(drop_pending_updates=True, close_loop=False, stop_signals=None)
+        except Exception as e:
+            if "Conflict" in str(e):
+                print(f"⚠️ Conflict found, waiting 30s... {e}", flush=True)
+                time.sleep(30)
+                continue
+            else:
+                print(f"Polling error: {e}", flush=True)
+                time.sleep(10)
+                continue
+        break
 
 if __name__ == "__main__":
     run()
