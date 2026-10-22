@@ -1,4 +1,4 @@
-ccxt
-pandas
 python-telegram-bot==20.7
-Flask
+Flask==2.3.3
+ccxt==4.1.64
+pandas==2.1.3
