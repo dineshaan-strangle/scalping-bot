@@ -16,35 +16,42 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True") == "True"
 
-print(f"START V5 PRO: {SYMBOL} Paper={PAPER_TRADE} Fixed={FIXED_DOLLARS}", flush=True)
+print(f"START V6 FIX: {SYMBOL} Paper={PAPER_TRADE}", flush=True)
 
-exchange = ccxt.delta({'apiKey': DELTA_API_KEY, 'secret': DELTA_API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+# Public exchange for market data - NO API KEY
+public_exchange = ccxt.delta({'enableRateLimit': True})
+# Private exchange for trading
+private_exchange = ccxt.delta({'apiKey': DELTA_API_KEY, 'secret': DELTA_API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+
 try:
-    exchange.load_markets()
-    print(f"Markets loaded", flush=True)
+    private_exchange.load_markets()
+    print("Markets loaded", flush=True)
 except Exception as e:
-    print(f"Market load warning {e}", flush=True)
+    print(f"Market warning {e}", flush=True)
 
 position=None; entry_price=0
 
 web_app=Flask(__name__)
 @web_app.route('/')
-def home(): return f"<h1>V5 PRO RUNNING {SYMBOL} POS:{position} FIX:{FIXED_DOLLARS}</h1>"
+def home(): return f"<h1>V6 RUNNING {SYMBOL} POS:{position} FIX:{FIXED_DOLLARS}</h1>"
 def run_web(): web_app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
 threading.Thread(target=run_web, daemon=True).start()
 
 def get_indicators():
     try:
         ohlcv = None
-        for sym in ["BTC/USD:USD", "BTC/USD", "BTCUSD"]:
+        for sym in ["BTC/USD:USD", "BTC/USD"]:
             try:
-                ohlcv = exchange.fetch_ohlcv(sym, TIMEFRAME, limit=250)
+                ohlcv = public_exchange.fetch_ohlcv(sym, TIMEFRAME, limit=250)
                 if ohlcv and len(ohlcv) >= 60:
+                    print(f"Got data from {sym}", flush=True)
                     break
-            except: continue
+            except Exception as e:
+                print(f"Fetch {sym} fail {e}", flush=True)
+                continue
         
         if not ohlcv or len(ohlcv) < 60:
-            print("No ohlcv data", flush=True)
+            print("No ohlcv", flush=True)
             return None, None
             
         df=pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
@@ -70,37 +77,29 @@ def get_qty(d,p): return max(1,int((d or 2)*LEVERAGE))
 def place_order(side,qty,ep):
     if PAPER_TRADE: print(f"[PAPER] {side} {qty} @ {ep}",flush=True); return {}
     try:
-        exchange.create_market_order(SYMBOL,side,qty)
+        private_exchange.create_market_order(SYMBOL,side,qty)
         tp=ep*1.004 if side=='buy' else ep*0.996
         sl=ep*0.992 if side=='buy' else ep*1.008
         ts='sell' if side=='buy' else 'buy'
-        try: exchange.create_order(SYMBOL,'limit',ts,qty,tp,{'reduce_only':True})
+        try: private_exchange.create_order(SYMBOL,'limit',ts,qty,tp,{'reduce_only':True})
         except: pass
-        try: exchange.create_order(SYMBOL,'market',ts,qty,None,{'stop_price':sl,'reduce_only':True})
+        try: private_exchange.create_order(SYMBOL,'market',ts,qty,None,{'stop_price':sl,'reduce_only':True})
         except: pass
         return {}
     except Exception as e: print(e); return None
 
 def format_market_msg(ind, price):
     try:
-        rsi = float(ind['rsi'])
-        ema = float(ind['ema'])
-        up = float(ind['up'])
-        lo = float(ind['lo'])
-        sma = float(ind['sma'])
-        
+        rsi = float(ind['rsi']); ema = float(ind['ema']); up = float(ind['up']); lo = float(ind['lo']); sma = float(ind['sma'])
         if rsi < 30: rsi_sig = "Oversold - LONG Opportunity"
         elif rsi > 70: rsi_sig = "Overbought - SHORT Opportunity"
         elif rsi < 35: rsi_sig = "Near Oversold - LONG Ready"
         elif rsi > 65: rsi_sig = "Near Overbought - SHORT Ready"
         else: rsi_sig = "Neutral - Waiting"
-
-        if price < lo: bb_sig = "Below Lower Band - LONG Signal"
-        elif price > up: bb_sig = "Above Upper Band - SHORT Signal"
+        if price < lo: bb_sig = "Below Lower - LONG Signal"
+        elif price > up: bb_sig = "Above Upper - SHORT Signal"
         else: bb_sig = "Inside Bands - No Signal"
-
         trend = "Bullish" if price > ema else "Bearish"
-
         msg = f"""MARKET ANALYSIS (5m)
 Price: ${price:.2f}
 RSI(14): {rsi:.2f} - {rsi_sig}
@@ -112,9 +111,9 @@ Bollinger Bands:
 EMA200: ${ema:.2f} - {trend}
 
 Bot: {SYMBOL} {LEVERAGE}x
-Fixed Amount: ${FIXED_DOLLARS}
+Fixed: ${FIXED_DOLLARS}
 Position: {position}
-TP: 0.4% | SL: 0.8%
+TP 0.4% | SL 0.8%
 """
         return msg
     except Exception as e:
@@ -125,13 +124,12 @@ async def start_cmd(u,c):
     if ind is not None:
         await u.message.reply_text(format_market_msg(ind, price))
     else:
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         ind, price = get_indicators()
         if ind is not None:
             await u.message.reply_text(format_market_msg(ind, price))
         else:
-            await u.message.reply_text(f"V5 Pro Bot {SYMBOL}\nMarket data loading, please try /info\nFixed: ${FIXED_DOLLARS}")
-    
+            await u.message.reply_text(f"V6 Bot {SYMBOL}\nMarket data retrying... Please try /info in 10 sec\nFixed: ${FIXED_DOLLARS}")
     await u.message.reply_text(f"Enter fixed amount in USD (Current: ${FIXED_DOLLARS})")
     return ASKING_AMOUNT
 
@@ -143,8 +141,7 @@ async def recv_amt(u,c):
         FIXED_DOLLARS=d
         ind, price = get_indicators()
         if ind is not None:
-            details = format_market_msg(ind, price)
-            await u.message.reply_text(f"Fixed Amount Set: ${FIXED_DOLLARS} x {LEVERAGE}x\nBot Auto Started - Waiting for signal...\n\n{details}")
+            await u.message.reply_text(f"Fixed Amount Set: ${FIXED_DOLLARS} x {LEVERAGE}x\nBot Auto Started - Waiting for signal...\n\n{format_market_msg(ind, price)}")
         else:
             await u.message.reply_text(f"Fixed Amount Set: ${FIXED_DOLLARS} x {LEVERAGE}x\nBot Auto Started - Market data will be available shortly. Use /info")
         return ConversationHandler.END
@@ -162,8 +159,8 @@ async def close_cmd(u,c):
     if position:
         _,pr=get_indicators(); q=get_qty(FIXED_DOLLARS,pr or 85000); sd='sell' if position=="LONG" else 'buy'
         if not PAPER_TRADE:
-            try: exchange.create_market_order(SYMBOL,sd,q,None,{'reduce_only':True})
-            except: exchange.create_market_order(SYMBOL,sd,q)
+            try: private_exchange.create_market_order(SYMBOL,sd,q,None,{'reduce_only':True})
+            except: private_exchange.create_market_order(SYMBOL,sd,q)
         await u.message.reply_text(f"Closed {position}"); position=None
     else: await u.message.reply_text("No open position")
 async def balance_cmd(u,c): 
@@ -174,7 +171,7 @@ async def balance_cmd(u,c):
 
 async def trading_loop(app):
     global position, entry_price
-    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"V5 PRO BOT STARTED {SYMBOL} Fixed:${FIXED_DOLLARS}\nUse /start to see market details")
+    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"V6 BOT STARTED {SYMBOL} Fixed:${FIXED_DOLLARS}\nUse /start to see market details")
     except: pass
     while True:
         try:
@@ -211,7 +208,7 @@ def run():
         except: pass
         asyncio.create_task(trading_loop(a))
     app.post_init=on_startup
-    print("Bot polling V5 PRO...",flush=True)
+    print("Bot polling V6...",flush=True)
     while True:
         try: app.run_polling(drop_pending_updates=True, close_loop=False, stop_signals=None)
         except Exception as e:
