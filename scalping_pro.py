@@ -6,7 +6,6 @@ from datetime import datetime, timezone, timedelta
 CONFIG_FILE = "bot_config.json"
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# FILE ONLY - ENV EDUTHOM
 def load_config():
     data = {"LEVERAGE": 10, "FIXED_DOLLARS": 20.0, "TP_PCT": 0.004, "SL_PCT": 0.004}
     if os.path.exists(CONFIG_FILE):
@@ -22,7 +21,7 @@ def save_config():
     try:
         with open(CONFIG_FILE, 'w') as f:
             json.dump({"LEVERAGE": LEVERAGE, "FIXED_DOLLARS": FIXED_DOLLARS, "TP_PCT": TP_PCT, "SL_PCT": SL_PCT}, f)
-        print(f"Saved to file: {LEVERAGE} {FIXED_DOLLARS}", flush=True)
+        print(f"Saved: {LEVERAGE} {FIXED_DOLLARS}", flush=True)
     except Exception as e:
         print(f"Save error {e}", flush=True)
 
@@ -44,7 +43,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True").strip().lower() == "true"
 
-print(f"V12 FILE-ONLY FULL ${FIXED_DOLLARS} x{LEVERAGE} TP:{TP_PCT*100}% SL:{SL_PCT*100}% PAPER:{PAPER_TRADE}", flush=True)
+print(f"V12 FIXED ${FIXED_DOLLARS} x{LEVERAGE} TP:{TP_PCT*100}% SL:{SL_PCT*100}% PAPER:{PAPER_TRADE}", flush=True)
 
 private_exchange = ccxt.delta({'apiKey': DELTA_API_KEY, 'secret': DELTA_API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'future'}})
 
@@ -56,7 +55,8 @@ daily_limit_hit=False
 
 web_app=Flask(__name__)
 @web_app.route('/')
-def home(): return f"<h1>V12 FULL FILE-ONLY ${FIXED_DOLLARS}x{LEVERAGE} Trades:{trades_today}/10 IST:{today_date} PnL:${daily_pnl_dollars:.2f}</h1>"
+def home():
+    return f"<h1>V12 FIXED ${FIXED_DOLLARS}x{LEVERAGE} Trades:{trades_today}/10 IST:{today_date} PnL:${daily_pnl_dollars:.2f}</h1>"
 def run_web(): web_app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
 threading.Thread(target=run_web, daemon=True).start()
 
@@ -117,7 +117,7 @@ def place_order(side,qty,ep, is_close=False):
 
 async def trading_loop(app):
     global position, entry_price, entry_qty, trades_today, daily_pnl_dollars, last_trade_time, today_date, daily_limit_hit
-    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🤖 V12 FULL FILE-ONLY READY\n📅 IST Date:{today_date}\n💵 ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP{TP_PCT*100}% SL{SL_PCT*100}%\n📊 Trades: {trades_today}/10\nBOT LA MATHALAM ✅")
+    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🤖 V12 FIXED READY\n📅 IST:{today_date}\n💵 ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP{TP_PCT*100}% SL{SL_PCT*100}%\nTrades:{trades_today}/10 BOT CONTROL ✅")
     except: pass
     while True:
         try:
@@ -128,7 +128,7 @@ async def trading_loop(app):
                 daily_pnl_dollars = 0
                 daily_limit_hit = False
                 print(f"NEW DAY RESET IST {today_date}", flush=True)
-                try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🌅 NEW DAY IST RESET\n📅 {today_date}\nTrades: 0/10\nDaily PnL: $0\n⚙️ ${FIXED_DOLLARS} x{LEVERAGE} Same ✅")
+                try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🌅 NEW DAY IST RESET\n📅 {today_date}\nTrades: 0/10\nDaily: $0\n${FIXED_DOLLARS} x{LEVERAGE} Same ✅")
                 except: pass
 
             if daily_limit_hit:
@@ -169,11 +169,11 @@ async def trading_loop(app):
                         daily_pnl_dollars+=pnl_dollar
                         if daily_pnl_dollars >= DAILY_TARGET_DOLLARS:
                             daily_limit_hit=True
-                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🎯 DAILY TARGET HIT ${daily_pnl_dollars:.2f}\nTrading stopped today")
+                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🎯 TARGET HIT ${daily_pnl_dollars:.2f}\nStopped today")
                             except: pass
                         if daily_pnl_dollars <= -DAILY_SL_DOLLARS:
                             daily_limit_hit=True
-                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🛑 DAILY SL HIT ${daily_pnl_dollars:.2f}\nTrading stopped today")
+                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🛑 DAILY SL HIT ${daily_pnl_dollars:.2f}\nStopped today")
                             except: pass
                         try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"{'TP ✅' if pnl>0 else 'SL ❌'} {position}\nEntry:${entry_price:.2f} Exit:${price:.2f}\nPnL: ${pnl_dollar:.2f} ({pnl*100:.2f}%)\nDaily:${daily_pnl_dollars:.2f}")
                         except: pass
@@ -187,25 +187,40 @@ def run():
     app=ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     async def info_cmd(u,c):
         ind,price=get_indicators()
-        await u.message.reply_text(f"🤖 V12 FILE-ONLY FULL\n💰 ${price:.2f if price else 0}\n📅 IST: {today_date}\n📦 Pos: {position or 'None'} {f'@${entry_price:.2f}' if position else ''}\n⚙️ ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP: {TP_PCT*100}% SL: {SL_PCT*100}%\n📊 Trades: {trades_today}/10\n💵 Daily:${daily_pnl_dollars:.2f}\nPAPER:{PAPER_TRADE}")
+        price_str = f"${price:.2f}" if price else "$0"
+        entry_str = f"@${entry_price:.2f}" if position else ""
+        daily_str = f"${daily_pnl_dollars:.2f}"
+        await u.message.reply_text(f"🤖 V12 FIXED\n💰 {price_str}\n📅 IST: {today_date}\n📦 Pos: {position or 'None'} {entry_str}\n⚙️ ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP: {TP_PCT*100}% SL: {SL_PCT*100}%\n📊 Trades: {trades_today}/10\n💵 Daily:{daily_str}\nPAPER:{PAPER_TRADE}")
 
-    async def settings_cmd(u,c): await u.message.reply_text(f"⚙️ SETTINGS FILE-ONLY\nDate IST: {today_date}\n💵 ${FIXED_DOLLARS}\n📈 x{LEVERAGE}\n🎯 TP: {TP_PCT*100}%\n🛑 SL: {SL_PCT*100}%\nTrades: {trades_today}/10\nDaily:${daily_pnl_dollars:.2f}\n\nBOT LA MATHA:\n/setdollar 20\n/setleverage 10\n/settp 1\n/setsl 0.5")
+    async def settings_cmd(u,c):
+        await u.message.reply_text(f"⚙️ SETTINGS\nDate IST: {today_date}\n💵 ${FIXED_DOLLARS}\n📈 x{LEVERAGE}\n🎯 TP: {TP_PCT*100}%\n🛑 SL: {SL_PCT*100}%\nTrades: {trades_today}/10\n\nBOT COMMANDS:\n/setdollar 20\n/setleverage 10\n/settp 1\n/setsl 0.5")
 
     async def setdollar_cmd(u,c):
         global FIXED_DOLLARS
-        try: FIXED_DOLLARS=float(c.args[0]); save_config(); await u.message.reply_text(f"✅ ${FIXED_DOLLARS} Saved - File la ✅\nBot la mattum mathalaam")
+        try:
+            FIXED_DOLLARS=float(c.args[0]); save_config()
+            await u.message.reply_text(f"✅ ${FIXED_DOLLARS} Saved ✅")
         except: await u.message.reply_text("Use: /setdollar 20")
+
     async def setleverage_cmd(u,c):
         global LEVERAGE
-        try: LEVERAGE=int(c.args[0]); save_config(); await u.message.reply_text(f"✅ x{LEVERAGE} Saved - File la ✅")
+        try:
+            LEVERAGE=int(c.args[0]); save_config()
+            await u.message.reply_text(f"✅ x{LEVERAGE} Saved ✅\nNew Qty calc will use this")
         except: await u.message.reply_text("Use: /setleverage 10")
+
     async def settp_cmd(u,c):
         global TP_PCT
-        try: v=float(c.args[0]); TP_PCT=v/100 if v>=0.1 else v; save_config(); await u.message.reply_text(f"✅ TP {TP_PCT*100}% Saved")
+        try:
+            v=float(c.args[0]); TP_PCT=v/100 if v>=0.1 else v; save_config()
+            await u.message.reply_text(f"✅ TP {TP_PCT*100}% Saved")
         except: await u.message.reply_text("Use: /settp 1")
+
     async def setsl_cmd(u,c):
         global SL_PCT
-        try: v=float(c.args[0]); SL_PCT=v/100 if v>=0.1 else v; save_config(); await u.message.reply_text(f"✅ SL {SL_PCT*100}% Saved")
+        try:
+            v=float(c.args[0]); SL_PCT=v/100 if v>=0.1 else v; save_config()
+            await u.message.reply_text(f"✅ SL {SL_PCT*100}% Saved")
         except: await u.message.reply_text("Use: /setsl 0.5")
 
     app.add_handler(CommandHandler("info",info_cmd))
@@ -221,11 +236,12 @@ def run():
         except: pass
         asyncio.create_task(trading_loop(a))
     app.post_init=on_startup
-    print("Bot V12 FULL FILE-ONLY...",flush=True)
+    print("Bot V12 FIXED starting...",flush=True)
     while True:
         try: app.run_polling(drop_pending_updates=True, close_loop=False, stop_signals=None)
         except Exception as e:
             if "Conflict" in str(e): time.sleep(30); continue
             print(e); time.sleep(10); continue
         break
+
 if __name__=="__main__": run()
