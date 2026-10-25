@@ -1,4 +1,4 @@
-import ccxt, asyncio, pandas as pd, os, threading, traceback, time, requests, json
+import ccxt, asyncio, pandas as pd, os, threading, time, requests, json
 from flask import Flask
 from telegram.ext import ApplicationBuilder, CommandHandler
 from datetime import datetime, timezone, timedelta
@@ -11,9 +11,8 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f:
-                file_data = json.load(f)
-                data.update(file_data)
-                print(f"Loaded from file: {data}", flush=True)
+                data.update(json.load(f))
+                print(f"Loaded: {data}", flush=True)
         except: pass
     return data
 
@@ -43,7 +42,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True").strip().lower() == "true"
 
-print(f"V12 FIXED ${FIXED_DOLLARS} x{LEVERAGE} TP:{TP_PCT*100}% SL:{SL_PCT*100}% PAPER:{PAPER_TRADE}", flush=True)
+print(f"V13 PNL FIXED ${FIXED_DOLLARS} x{LEVERAGE} PAPER:{PAPER_TRADE}", flush=True)
 
 private_exchange = ccxt.delta({'apiKey': DELTA_API_KEY, 'secret': DELTA_API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'future'}})
 
@@ -56,7 +55,8 @@ daily_limit_hit=False
 web_app=Flask(__name__)
 @web_app.route('/')
 def home():
-    return f"<h1>V12 FIXED ${FIXED_DOLLARS}x{LEVERAGE} Trades:{trades_today}/10 IST:{today_date} PnL:${daily_pnl_dollars:.2f}</h1>"
+    daily_str = f"${daily_pnl_dollars:.2f}"
+    return f"<h1>V13 PNL ${FIXED_DOLLARS}x{LEVERAGE} Trades:{trades_today}/10 PnL:{daily_str} IST:{today_date}</h1>"
 def run_web(): web_app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
 threading.Thread(target=run_web, daemon=True).start()
 
@@ -117,36 +117,26 @@ def place_order(side,qty,ep, is_close=False):
 
 async def trading_loop(app):
     global position, entry_price, entry_qty, trades_today, daily_pnl_dollars, last_trade_time, today_date, daily_limit_hit
-    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🤖 V12 FIXED READY\n📅 IST:{today_date}\n💵 ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP{TP_PCT*100}% SL{SL_PCT*100}%\nTrades:{trades_today}/10 BOT CONTROL ✅")
+    try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🤖 V13 READY\n📅 IST:{today_date}\n💵 ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP{TP_PCT*100}% SL{SL_PCT*100}%\n/pnl command added ✅")
     except: pass
     while True:
         try:
             curr_ist_date = datetime.now(IST).date()
             if curr_ist_date != today_date:
                 today_date = curr_ist_date
-                trades_today = 0
-                daily_pnl_dollars = 0
-                daily_limit_hit = False
+                trades_today = 0; daily_pnl_dollars = 0; daily_limit_hit = False
                 print(f"NEW DAY RESET IST {today_date}", flush=True)
-                try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🌅 NEW DAY IST RESET\n📅 {today_date}\nTrades: 0/10\nDaily: $0\n${FIXED_DOLLARS} x{LEVERAGE} Same ✅")
+                try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"🌅 NEW DAY IST RESET\n📅 {today_date}\nTrades: 0/10\nDaily: $0")
                 except: pass
-
             if daily_limit_hit:
                 if daily_pnl_dollars >= DAILY_TARGET_DOLLARS or daily_pnl_dollars <= -DAILY_SL_DOLLARS:
                     await asyncio.sleep(300); continue
-                else:
-                    daily_limit_hit=False
-            
-            if trades_today>=MAX_TRADES_PER_DAY:
-                await asyncio.sleep(300); continue
-                
-            if time.time()-last_trade_time < COOLDOWN_SEC and trades_today>0:
-                await asyncio.sleep(30); continue
-                
+                else: daily_limit_hit=False
+            if trades_today>=MAX_TRADES_PER_DAY: await asyncio.sleep(300); continue
+            if time.time()-last_trade_time < COOLDOWN_SEC and trades_today>0: await asyncio.sleep(30); continue
             ind,price=get_indicators()
             if not ind: await asyncio.sleep(15); continue
             q=get_qty(FIXED_DOLLARS,price)
-            
             if position is None:
                 long_c = (price <= ind['lo'] + 15) and (ind['rsi'] < 48)
                 short_c = (price >= ind['up'] - 15) and (ind['rsi'] > 52)
@@ -173,7 +163,7 @@ async def trading_loop(app):
                             except: pass
                         if daily_pnl_dollars <= -DAILY_SL_DOLLARS:
                             daily_limit_hit=True
-                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🛑 DAILY SL HIT ${daily_pnl_dollars:.2f}\nStopped today")
+                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"🛑 SL HIT ${daily_pnl_dollars:.2f}\nStopped today")
                             except: pass
                         try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"{'TP ✅' if pnl>0 else 'SL ❌'} {position}\nEntry:${entry_price:.2f} Exit:${price:.2f}\nPnL: ${pnl_dollar:.2f} ({pnl*100:.2f}%)\nDaily:${daily_pnl_dollars:.2f}")
                         except: pass
@@ -190,40 +180,40 @@ def run():
         price_str = f"${price:.2f}" if price else "$0"
         entry_str = f"@${entry_price:.2f}" if position else ""
         daily_str = f"${daily_pnl_dollars:.2f}"
-        await u.message.reply_text(f"🤖 V12 FIXED\n💰 {price_str}\n📅 IST: {today_date}\n📦 Pos: {position or 'None'} {entry_str}\n⚙️ ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP: {TP_PCT*100}% SL: {SL_PCT*100}%\n📊 Trades: {trades_today}/10\n💵 Daily:{daily_str}\nPAPER:{PAPER_TRADE}")
+        await u.message.reply_text(f"🤖 V13 FIXED\n💰 {price_str}\n📅 IST: {today_date}\n📦 Pos: {position or 'None'} {entry_str}\n⚙️ ${FIXED_DOLLARS} x{LEVERAGE}\n🎯 TP: {TP_PCT*100}% SL: {SL_PCT*100}%\n📊 Trades: {trades_today}/10\n💵 Daily:{daily_str}\nPAPER:{PAPER_TRADE}")
+
+    async def pnl_cmd(u,c):
+        if position is None:
+            await u.message.reply_text(f"📭 No open position\n💵 Daily PnL: ${daily_pnl_dollars:.2f}\nTrades: {trades_today}/10")
+        else:
+            ind,price=get_indicators()
+            if not price: price=entry_price
+            pnl_dollar=calc_pnl_dollar(entry_price, price, entry_qty, position)
+            pnl_pct=(price-entry_price)/entry_price*100 if position=="LONG" else (entry_price-price)/entry_price*100
+            await u.message.reply_text(f"💰 LIVE PNL\n📦 Pos: {position} @${entry_price:.2f}\n💵 Now: ${price:.2f}\n📏 Qty: {entry_qty}\n\n📈 Live: ${pnl_dollar:.2f} ({pnl_pct:.2f}%)\n💵 Daily Total: ${daily_pnl_dollars:.2f}\n🎯 TP: {TP_PCT*100}% SL: {SL_PCT*100}%")
 
     async def settings_cmd(u,c):
-        await u.message.reply_text(f"⚙️ SETTINGS\nDate IST: {today_date}\n💵 ${FIXED_DOLLARS}\n📈 x{LEVERAGE}\n🎯 TP: {TP_PCT*100}%\n🛑 SL: {SL_PCT*100}%\nTrades: {trades_today}/10\n\nBOT COMMANDS:\n/setdollar 20\n/setleverage 10\n/settp 1\n/setsl 0.5")
+        await u.message.reply_text(f"⚙️ SETTINGS\nDate IST: {today_date}\n💵 ${FIXED_DOLLARS}\n📈 x{LEVERAGE}\n🎯 TP: {TP_PCT*100}%\n🛑 SL: {SL_PCT*100}%\nTrades: {trades_today}/10\n\nBOT COMMANDS:\n/setdollar 10\n/setleverage 10\n/settp 1\n/setsl 0.5\n/pnl\n/info")
 
     async def setdollar_cmd(u,c):
         global FIXED_DOLLARS
-        try:
-            FIXED_DOLLARS=float(c.args[0]); save_config()
-            await u.message.reply_text(f"✅ ${FIXED_DOLLARS} Saved ✅")
+        try: FIXED_DOLLARS=float(c.args[0]); save_config(); await u.message.reply_text(f"✅ ${FIXED_DOLLARS} Saved ✅")
         except: await u.message.reply_text("Use: /setdollar 20")
-
     async def setleverage_cmd(u,c):
         global LEVERAGE
-        try:
-            LEVERAGE=int(c.args[0]); save_config()
-            await u.message.reply_text(f"✅ x{LEVERAGE} Saved ✅\nNew Qty calc will use this")
+        try: LEVERAGE=int(c.args[0]); save_config(); await u.message.reply_text(f"✅ x{LEVERAGE} Saved ✅\nNew Qty calc will use this")
         except: await u.message.reply_text("Use: /setleverage 10")
-
     async def settp_cmd(u,c):
         global TP_PCT
-        try:
-            v=float(c.args[0]); TP_PCT=v/100 if v>=0.1 else v; save_config()
-            await u.message.reply_text(f"✅ TP {TP_PCT*100}% Saved")
+        try: v=float(c.args[0]); TP_PCT=v/100 if v>=0.1 else v; save_config(); await u.message.reply_text(f"✅ TP {TP_PCT*100}% Saved")
         except: await u.message.reply_text("Use: /settp 1")
-
     async def setsl_cmd(u,c):
         global SL_PCT
-        try:
-            v=float(c.args[0]); SL_PCT=v/100 if v>=0.1 else v; save_config()
-            await u.message.reply_text(f"✅ SL {SL_PCT*100}% Saved")
+        try: v=float(c.args[0]); SL_PCT=v/100 if v>=0.1 else v; save_config(); await u.message.reply_text(f"✅ SL {SL_PCT*100}% Saved")
         except: await u.message.reply_text("Use: /setsl 0.5")
 
     app.add_handler(CommandHandler("info",info_cmd))
+    app.add_handler(CommandHandler("pnl",pnl_cmd))
     app.add_handler(CommandHandler("settings",settings_cmd))
     app.add_handler(CommandHandler("setdollar",setdollar_cmd))
     app.add_handler(CommandHandler("setleverage",setleverage_cmd))
@@ -236,12 +226,11 @@ def run():
         except: pass
         asyncio.create_task(trading_loop(a))
     app.post_init=on_startup
-    print("Bot V12 FIXED starting...",flush=True)
+    print("Bot V13 PNL starting...",flush=True)
     while True:
         try: app.run_polling(drop_pending_updates=True, close_loop=False, stop_signals=None)
         except Exception as e:
             if "Conflict" in str(e): time.sleep(30); continue
             print(e); time.sleep(10); continue
         break
-
 if __name__=="__main__": run()
