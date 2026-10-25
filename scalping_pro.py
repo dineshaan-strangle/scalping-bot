@@ -1,12 +1,30 @@
-import ccxt, asyncio, pandas as pd, os, threading, traceback, time, requests
+import ccxt, asyncio, pandas as pd, os, threading, traceback, time, requests, json
 from flask import Flask
 from telegram.ext import ApplicationBuilder, CommandHandler
 from datetime import datetime
 
+# === CONFIG FILE SAVE PANNA ===
+CONFIG_FILE = "bot_config.json"
+def load_config():
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+                return data
+    except: pass
+    return {"LEVERAGE": 5, "FIXED_DOLLARS": 10.0}
+
+def save_config():
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump({"LEVERAGE": LEVERAGE, "FIXED_DOLLARS": FIXED_DOLLARS}, f)
+    except: pass
+
+cfg = load_config()
 SYMBOL = "BTC/USD:USD" 
 TIMEFRAME = "5m"
-LEVERAGE = 5
-FIXED_DOLLARS = 10.0
+LEVERAGE = cfg.get("LEVERAGE", 5)
+FIXED_DOLLARS = cfg.get("FIXED_DOLLARS", 10.0)
 TP_PCT = 0.004
 SL_PCT = 0.004
 MAX_TRADES_PER_DAY = 10
@@ -73,7 +91,7 @@ def get_indicators():
         if not ohlcv or len(ohlcv)<50: return None,None
         df=pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
         df['sma']=df['c'].rolling(20).mean(); df['std']=df['c'].rolling(20).std()
-        df['up']=df['sma']+1.5*df['std']; df['lo']=df['sma']-1.5*df['std'] # V11 1.5x tight
+        df['up']=df['sma']+1.5*df['std']; df['lo']=df['sma']-1.5*df['std']
         df['ema']=df['c'].ewm(span=200).mean()
         d=df['c'].diff(); g=d.clip(lower=0).ewm(alpha=1/14).mean(); l=(-d.clip(upper=0)).ewm(alpha=1/14).mean().replace(0,1e-9)
         df['rsi']=100-(100/(1+g/l))
@@ -121,23 +139,18 @@ async def trading_loop(app):
         try:
             if datetime.now().date()!=today_date:
                 today_date=datetime.now().date(); trades_today=0; daily_pnl_dollars=0; daily_limit_hit=False
-
             if daily_limit_hit:
                 await asyncio.sleep(300); continue
             if trades_today>=MAX_TRADES_PER_DAY:
                 await asyncio.sleep(300); continue
             if time.time()-last_trade_time < COOLDOWN_SEC and trades_today>0:
                 await asyncio.sleep(30); continue
-
             ind,price=get_indicators()
             if not ind: await asyncio.sleep(15); continue
             q=get_qty(FIXED_DOLLARS,price)
-
             if position is None:
-                # V11 LOOSE LOGIC - TRADE EDUKKUM
                 long_c = (price <= ind['lo'] + 15) and (ind['rsi'] < 48)
                 short_c = (price >= ind['up'] - 15) and (ind['rsi'] > 52)
-                
                 if long_c:
                     tp_p = price * (1 + TP_PCT); sl_p = price * (1 - SL_PCT)
                     if place_order('buy',q,price, is_close=False):
@@ -153,7 +166,6 @@ async def trading_loop(app):
             else:
                 pnl=(price-entry_price)/entry_price if position=="LONG" else (entry_price-price)/entry_price
                 pnl_dollar=calc_pnl_dollar(entry_price, price, entry_qty, position)
-                
                 if pnl<=-SL_PCT or pnl>=TP_PCT:
                     close_side = 'sell' if position=="LONG" else 'buy'
                     if place_order(close_side, entry_qty, price, is_close=True):
@@ -162,10 +174,9 @@ async def trading_loop(app):
                         try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=msg)
                         except: pass
                         position=None; entry_price=0; entry_qty=0
-                        
                         if daily_pnl_dollars >= DAILY_TARGET_DOLLARS or daily_pnl_dollars <= -DAILY_SL_DOLLARS:
                             daily_limit_hit=True
-                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"DAILY LIMIT HIT ${daily_pnl_dollars:.2f} Bot Paused till tomorrow - AUTO CLOSE ACTIVE")
+                            try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"DAILY LIMIT HIT ${daily_pnl_dollars:.2f} Bot Paused till tomorrow")
                             except: pass
                     else:
                         try: await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,text=f"❌ CLOSE FAILED {position} @ ${price:.2f} Retrying...")
@@ -178,26 +189,17 @@ def run():
     async def info_cmd(u,c):
         ind,price=get_indicators()
         if not ind:
-            await u.message.reply_text("Data loading... try again 10s"); return
+            await u.message.reply_text("Data loading..."); return
         trend = "Bullish 🟢" if price > ind['ema'] else "Bearish 🔴"
-        status = "Above Upper - SHORT Signal" if price >= ind['up'] else "Below Lower - LONG Signal" if price <= ind['lo'] else "Inside - Wait ⏳ but V11 will trade near band"
-        tp_long = price * (1 + TP_PCT); sl_long = price * (1 - SL_PCT)
-        txt=f"""🤖 <b>BTC SCALP V11 LIVE READY</b>
-⏰ {datetime.now().strftime('%H:%M:%S %d-%m')}
+        status = "Above Upper - SHORT" if price >= ind['up'] else "Below Lower - LONG" if price <= ind['lo'] else "Inside - Wait"
+        txt=f"""🤖 <b>BTC SCALP V11</b>
 💰 Price: ${price:.2f} ({trend})
-EMA200: ${ind['ema']:.2f}
-📊 Boll 20,1.5 (V11 Tight)
-Upper: ${ind['up']:.2f}
-Lower: ${ind['lo']:.2f}
-SMA20: ${ind['sma']:.2f}
-Range 20C: ${ind['low']:.0f}-${ind['high']:.0f}
-Status: {status}
-📈 RSI: {ind['rsi']:.1f} (Prev {ind['rsi_1']:.1f}, {ind['rsi_2']:.1f})
-📦 Pos: {position or 'None'} Entry: ${entry_price:.1f} Qty:{entry_qty}
-🎯 TP: {TP_PCT*100}% SL: {SL_PCT*100}% AUTO SL/TP: ON ✅
-📊 Trades: {trades_today}/{MAX_TRADES_PER_DAY} Daily: ${daily_pnl_dollars:.2f} Target:${DAILY_TARGET_DOLLARS}/-${DAILY_SL_DOLLARS} LimitHit:{daily_limit_hit}
-Mode: {'PAPER 🟡' if PAPER_TRADE else 'LIVE 🔴'} Qty: {get_qty(FIXED_DOLLARS, price)} BTC
-Data: LIVE Delta CDN ✅ AutoClose: YES ✅
+📦 Pos: {position or 'None'} Qty:{entry_qty}
+⚙️ Dollar: ${FIXED_DOLLARS} Lev: x{LEVERAGE}
+Qty Now: {get_qty(FIXED_DOLLARS, price)} BTC
+📊 Trades: {trades_today}/10 Daily: ${daily_pnl_dollars:.2f}
+Mode: {'PAPER 🟡' if PAPER_TRADE else 'LIVE 🔴'}
+Use /settings /setdollar /setleverage
 """
         await u.message.reply_text(txt, parse_mode='HTML')
         
@@ -217,15 +219,44 @@ Data: LIVE Delta CDN ✅ AutoClose: YES ✅
                 position=None; entry_price=0; entry_qty=0
             else: await u.message.reply_text(f"❌ Close Failed")
         else: await u.message.reply_text("No pos")
+
+    async def settings_cmd(u,c):
+        await u.message.reply_text(f"⚙️ SETTINGS\n💵 Fixed Dollars: ${FIXED_DOLLARS}\n📈 Leverage: x{LEVERAGE}\nQty Now: {get_qty(FIXED_DOLLARS, 81500)}\n\nCommands:\n/setdollar 20\n/setleverage 10\nExample: /setdollar 50")
+
+    async def setdollar_cmd(u,c):
+        global FIXED_DOLLARS
+        try:
+            val = float(c.args[0])
+            FIXED_DOLLARS = val
+            save_config()
+            await u.message.reply_text(f"✅ Fixed Dollars changed to ${val}\nNew Qty: {get_qty(val, 81500)} BTC\nSaved ✅")
+        except:
+            await u.message.reply_text("Use: /setdollar 20\nExample: /setdollar 50")
+
+    async def setleverage_cmd(u,c):
+        global LEVERAGE
+        try:
+            val = int(c.args[0])
+            LEVERAGE = val
+            save_config()
+            await u.message.reply_text(f"✅ Leverage changed to x{val}\nNew Qty: {get_qty(FIXED_DOLLARS, 81500)} BTC\nSaved ✅")
+        except:
+            await u.message.reply_text("Use: /setleverage 10")
         
-    app.add_handler(CommandHandler("info",info_cmd)); app.add_handler(CommandHandler("pnl",pnl_cmd)); app.add_handler(CommandHandler("close",close_cmd))
+    app.add_handler(CommandHandler("info",info_cmd))
+    app.add_handler(CommandHandler("pnl",pnl_cmd))
+    app.add_handler(CommandHandler("close",close_cmd))
+    app.add_handler(CommandHandler("settings",settings_cmd))
+    app.add_handler(CommandHandler("setdollar",setdollar_cmd))
+    app.add_handler(CommandHandler("setleverage",setleverage_cmd))
+    
     async def on_startup(a):
         await asyncio.sleep(3)
         try: await a.bot.delete_webhook(drop_pending_updates=True)
         except: pass
         asyncio.create_task(trading_loop(a))
     app.post_init=on_startup
-    print("Bot polling V11 LIVE READY...",flush=True)
+    print("Bot polling V11...",flush=True)
     while True:
         try: app.run_polling(drop_pending_updates=True, close_loop=False, stop_signals=None)
         except Exception as e:
